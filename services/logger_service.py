@@ -67,10 +67,27 @@ class LoggerService:
 
     async def event(self, kind, message):
         assert self.db.conn
-        await self.db.conn.execute("INSERT INTO activity_logs(kind,message) VALUES(?,?)",(kind,message))
-        await self.db.conn.commit()
-        async with self.db.conn.execute("SELECT value FROM log_settings WHERE key='channel_id'") as c:
-            row=await c.fetchone()
+        # Logging must never break the calling command. Earlier builds let an
+        # unwrapped INSERT here (originally into a colliding table named "logs")
+        # bubble all the way up and abort whatever action triggered it (e.g. a
+        # user got muted/blocked locally but the whole .mute/.block command then
+        # errored out because of a *logging* failure). Persisting the activity
+        # record and notifying the log channel are both best-effort now: any
+        # failure is swallowed (and recorded in the generic `errors` table when
+        # possible) instead of propagating.
+        try:
+            await self.db.conn.execute("INSERT INTO activity_logs(kind,message) VALUES(?,?)",(kind,message))
+            await self.db.conn.commit()
+        except Exception as exc:
+            try:
+                await self.db.log_error("logger_event", f"{type(exc).__name__}: {str(exc)[:300]}")
+            except Exception:
+                pass
+        try:
+            async with self.db.conn.execute("SELECT value FROM log_settings WHERE key='channel_id'") as c:
+                row=await c.fetchone()
+        except Exception:
+            row=None
         if row:
             try:
                 target=int(row[0]) if str(row[0]).lstrip('-').isdigit() else row[0]
