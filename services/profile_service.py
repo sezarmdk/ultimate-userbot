@@ -1,7 +1,13 @@
 
 import asyncio
 import random
+import re
 from dataclasses import dataclass
+
+
+class ProfilePackError(Exception):
+    """Raised when an emoji-pack link/name can't be resolved into emoji IDs."""
+
 
 @dataclass
 class RotationState:
@@ -73,6 +79,42 @@ class ProfileService:
         value=state.values[state.index % len(state.values)]
         state.index=(state.index+1)%len(state.values)
         return value
+
+    def extract_custom_emoji_ids(self, message):
+        """Pull premium/custom emoji document IDs straight out of a message's
+        entities, so the user can paste the emoji itself instead of looking up
+        its numeric ID (e.g. `.autostatus` followed by a pasted premium emoji)."""
+        from telethon.tl.types import MessageEntityCustomEmoji
+        entities = getattr(message, "entities", None) or []
+        ids = [str(e.document_id) for e in entities if isinstance(e, MessageEntityCustomEmoji)]
+        return list(dict.fromkeys(ids))
+
+    async def resolve_pack_emojis(self, pack_ref):
+        """Resolve a custom-emoji pack -- given as a bare short name or a full
+        t.me/addemoji/<name> (or addstickers) link -- into every custom-emoji
+        document ID it contains, so `.autostatus <pack link>` can rotate through
+        the whole pack instead of requiring individual numeric IDs."""
+        from telethon.tl.functions.messages import GetStickerSetRequest
+        from telethon.tl.types import InputStickerSetShortName
+
+        ref = (pack_ref or "").strip()
+        match = re.search(r'(?:addemoji|addstickers)/([A-Za-z0-9_]+)', ref)
+        short_name = match.group(1) if match else ref.lstrip('@').strip()
+        short_name = short_name.split('?')[0].strip('/')
+        if not short_name:
+            raise ProfilePackError("Emoji pack nomi yoki havolasi aniqlanmadi.")
+        try:
+            result = await self.client(GetStickerSetRequest(
+                stickerset=InputStickerSetShortName(short_name=short_name), hash=0))
+        except Exception as exc:
+            raise ProfilePackError(
+                f"Pack topilmadi yoki yuklab bo‘lmadi (`{short_name}`): {type(exc).__name__}: {exc}"
+            ) from exc
+        documents = getattr(result, "documents", None) or []
+        ids = [str(doc.id) for doc in documents if getattr(doc, "id", None) is not None]
+        if not ids:
+            raise ProfilePackError(f"`{short_name}` packida hech qanday emoji topilmadi.")
+        return list(dict.fromkeys(ids))
 
     async def current_bio(self):
         # get_me() odatda "about" maydonini bermaydi; to‘liq foydalanuvchi ma'lumotini so‘raymiz.

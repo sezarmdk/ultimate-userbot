@@ -17,7 +17,7 @@ from services.autoread_service import AutoreadService
 from services.edit_service import EditService
 from services.logger_service import LoggerService
 from services.control_service import ControlService
-from services.profile_service import ProfileService, RotationState
+from services.profile_service import ProfileService, RotationState, ProfilePackError
 from services.calculator_service import SafeCalculator, CalculatorError
 from services.delete_service import DeleteService
 from services.system_service import SystemService
@@ -453,29 +453,39 @@ class App:
             mode=parsed.args[0].lower() if parsed.args else None
             if mode in {"status","current","info"}:
                 state=await self.profile.load("status")
-                body="⚪ O‘chiq" if not state else (
-                    f"{'🟢 Faol' if state.enabled else '⚪ O‘chiq'}\n\n"
-                    f"🔄 **Rejim**\n{'Ketma-ket' if state.mode == 'sequence' else 'Tasodifiy'}\n\n"
-                    f"⏱ **Interval**\n{state.interval} soniya\n\n😊 **Emoji soni**\n{len(state.values)}"
+                body="\u26aa O\u2018chiq" if not state else (
+                    f"{'\U0001f7e2 Faol' if state.enabled else '\u26aa O\u2018chiq'}\n\n"
+                    f"\U0001f504 **Rejim**\n{'Ketma-ket' if state.mode == 'sequence' else 'Tasodifiy'}\n\n"
+                    f"\u23f1 **Interval**\n{state.interval} soniya\n\n\U0001f60a **Emoji soni**\n{len(state.values)}"
                 )
                 await self.reply(event,UI.info("AVTO STATUS HOLATI",body),"result");return
             if mode=="help":
                 await self.reply(event,UI.info("AVTO STATUS YORDAMI",
                     "`.autostatus EMOJI_ID`\n`.autostatus ID1 ID2 ID3`\n"
-                    "`.autostatus ID1 ID2 sequence : 60`\n\n"
+                    "`.autostatus ID1 ID2 sequence : 60`\n"
+                    "`.autostatus <pack havolasi yoki nomi> : 60` \u2014 t.me/addemoji/... packidagi barcha emojilarni oladi\n"
+                    "`.autostatus` + xabarga premium emoji joylab yuborish \u2014 o\u2018sha emoji(lar)ni avtomatik aniqlaydi\n\n"
                     "REJIMLAR:\n`.autostatus status`\n`.autostatus current`\n`.autostatus examples`\n\n"
-                    "Hozirgi build custom emoji IDlarini saqlaydi, lekin Telegram API orqali statusni real yangilash yo‘li tasdiqlanmaguncha soxta muvaffaqiyat ko‘rsatmaydi."),"help");return
+                    "Hozirgi build custom emoji IDlarini saqlaydi, lekin Telegram API orqali statusni real yangilash yo\u2018li tasdiqlanmaguncha soxta muvaffaqiyat ko\u2018rsatmaydi."),"help");return
             if mode=="examples":
-                await self.reply(event,UI.info("AVTO STATUS MISOLLARI","`.autostatus 5276098269204754305`\n`.autostatus 111 222 sequence : 60`"),"help");return
+                await self.reply(event,UI.info("AVTO STATUS MISOLLARI",
+                    "`.autostatus 5276098269204754305`\n`.autostatus 111 222 sequence : 60`\n"
+                    "`.autostatus https://t.me/addemoji/MyPack : 45`\n"
+                    "`.autostatus` (xabar ichida premium emoji joylab yuboring)"),"help");return
+
+            # 1) Premium/custom emoji pasted directly into the command message.
+            pasted_emoji_ids=self.profile.extract_custom_emoji_ids(event.message)
 
             raw=" ".join(parsed.args).strip()
-            if not raw:
-                await self.reply(event,UI.warning("STATUS SOZLAMASI KIRITILMADI","Kamida bitta raqamli custom emoji ID kiriting.\n\n**MISOL**\n`.autostatus 5276098269204754305`"),"result");return
+            if not raw and not pasted_emoji_ids:
+                await self.reply(event,UI.warning("STATUS SOZLAMASI KIRITILMADI",
+                    "Kamida bitta raqamli custom emoji ID, emoji pack havolasi kiriting yoki xabar ichiga premium emoji joylang.\n\n"
+                    "**MISOL**\n`.autostatus 5276098269204754305`\n`.autostatus https://t.me/addemoji/PackName`"),"result");return
             interval=60
             if ":" in raw:
                 left, tail=raw.rsplit(":",1)
                 if not tail.strip().isdigit():
-                    await self.reply(event,UI.warning("STATUS INTERVALI NOTO‘G‘RI","Interval musbat soniya ko‘rinishida bo‘lishi kerak.\n\n**MISOL**\n`.autostatus 111 222 : 60`"),"result");return
+                    await self.reply(event,UI.warning("STATUS INTERVALI NOTO\u2018G\u2018RI","Interval musbat soniya ko\u2018rinishida bo\u2018lishi kerak.\n\n**MISOL**\n`.autostatus 111 222 : 60`"),"result");return
                 raw=left.strip(); interval=int(tail.strip())
             if interval < 30:
                 await self.reply(event,UI.warning("STATUS INTERVALI JUDA KICHIK","FloodWait xavfini kamaytirish uchun eng kichik interval 30 soniya.\n\n**MISOL**\n`.autostatus 111 222 : 30`"),"result");return
@@ -483,10 +493,28 @@ class App:
             rotation="random"
             if words and words[-1].lower() in {"random","sequence"}:
                 rotation=words.pop().lower()
-            values=words
-            if not values or any(not x.isdigit() or len(x)>20 for x in values):
-                await self.reply(event,UI.warning("STATUS SOZLAMASI NOTO‘G‘RI","Faqat raqamli custom emoji IDlari qabul qilinadi.\n\n**MISOL**\n`.autostatus 111 222 sequence : 60`"),"result");return
-            values=list(dict.fromkeys(values))
+
+            values=[]
+            if words:
+                if all(w.isdigit() and len(w)<=20 for w in words):
+                    # 2) Explicit numeric custom emoji IDs (previous behaviour).
+                    values=list(dict.fromkeys(words))
+                else:
+                    # 3) Anything else typed is treated as an emoji-pack link/short name.
+                    pack_ref=" ".join(words)
+                    try:
+                        values=await self.profile.resolve_pack_emojis(pack_ref)
+                    except ProfilePackError as exc:
+                        await self.reply(event,UI.warning("EMOJI PACK TOPILMADI",
+                            f"{exc}\n\n**MISOL**\n`.autostatus https://t.me/addemoji/PackName`"),"result");return
+            elif pasted_emoji_ids:
+                values=pasted_emoji_ids
+
+            if not values:
+                await self.reply(event,UI.warning("STATUS SOZLAMASI NOTO\u2018G\u2018RI",
+                    "Raqamli custom emoji ID, emoji pack havolasi kiriting yoki xabar ichiga premium emoji joylang.\n\n"
+                    "**MISOL**\n`.autostatus 111 222 sequence : 60`\n`.autostatus https://t.me/addemoji/PackName`"),"result");return
+
             state=RotationState(True,values,rotation,interval,None)
             # First update is attempted synchronously. We only start a repeating worker
             # after Telegram confirms the API request.
