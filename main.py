@@ -6,7 +6,6 @@ import pytz
 from telethon import TelegramClient, events
 from telethon.tl.functions.account import UpdateEmojiStatusRequest
 from telethon.tl.types import EmojiStatus, MessageEntityCustomEmoji
-from deep_translator import GoogleTranslator
 
 # ==================== SOZLAMALAR ====================
 API_ID = int(os.environ.get("API_ID", "32261789"))
@@ -252,7 +251,6 @@ async def handle_del(event):
     
     deleted = 0
     to_delete = []
-    # Faqat o'zingiz yozgan xabarlarni yig'ish
     async for msg in client.iter_messages(event.chat_id, from_user="me"):
         to_delete.append(msg.id)
         deleted += 1
@@ -270,35 +268,13 @@ async def handle_dell(event):
     await event.delete()
     
     to_delete = []
-    # Chatdagi barcha xabarlarni yig'ish
     async for msg in client.iter_messages(event.chat_id, limit=limit):
         to_delete.append(msg.id)
         
     if to_delete:
         await client.delete_messages(event.chat_id, to_delete)
 
-# 9. TARJIMON (.tr reply qilinganda)
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.tr$"))
-async def handle_translate(event):
-    if not event.is_reply:
-        await event.edit("⚠️ **Tarjima qilish uchun biror xabarga reply qilib `.tr` deb yozing!**")
-        return
-    
-    reply_msg = await event.get_reply_message()
-    text_to_tr = reply_msg.raw_text
-    
-    if not text_to_tr:
-        await event.edit("⚠️ **Ushbu xabarda matn topilmadi!**")
-        return
-    
-    await event.edit("🔄 **Tarjima qilinmoqda...**")
-    try:
-        translated = GoogleTranslator(source="auto", target="uz").translate(text_to_tr)
-        await event.edit(f"🌐 **O'zbekchaga tarjima:**\n━━━━━━━━━━━━━━━━━━━━\n{translated}")
-    except Exception as err:
-        await event.edit(f"❌ **Tarjimada xatolik:** `{err}`")
-
-# 10. TIZIM HAQIDA INFO (.info)
+# 9. TIZIM HAQIDA INFO (.info)
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.info$"))
 async def handle_info(event):
     now_tashkent = get_now_str()
@@ -337,7 +313,7 @@ async def handle_info(event):
 """
     await event.edit(info_text)
 
-# 11. YORDAM (.help)
+# 10. YORDAM (.help)
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.help$"))
 async def handle_help(event):
     help_text = """📖 **USERBOT BUYRUQLAR RO'YXATI**
@@ -367,8 +343,7 @@ async def handle_help(event):
 • `.mute <id/user>` — Muayyan odamni mute qilish.
 • `.unmute` yoki `.unmute <id>` — Mutedan chiqarish.
 
-🌐 **Tarjimon & Hisoblagich:**
-• `.tr` — Reply qilingan xabarni avtomatik aniqlab o'zbekchaga tarjima qiladi.
+🧮 **Hisoblagich:**
 • `.c <ifoda>` — Arifmetik misollarni hisoblaydi (Masalan: `.c 2+2*5`).
 ━━━━━━━━━━━━━━━━━━━━
 """
@@ -377,19 +352,16 @@ async def handle_help(event):
 # ================= KELUVCHI XABARLAR NAZORATI =================
 @client.on(events.NewMessage(incoming=True))
 async def incoming_handler(event):
-    # 1. AUTO-READ (Faqat shaxsiy chatlar uchun)
     if STATE["auto_read"]["active"] and event.is_private:
         try:
             await event.mark_read()
         except Exception:
             pass
 
-    # 2. MUTE TEKSHIRUVI
     is_chat_muted = event.chat_id in STATE["muted_chats"]
     is_user_muted = event.sender_id in STATE["muted_users"]
 
     if is_chat_muted or is_user_muted:
-        # Avval log kanalga nusxasini jo'natamiz
         if STATE["log_channel"]:
             try:
                 sender = await event.get_sender()
@@ -408,7 +380,6 @@ async def incoming_handler(event):
             except Exception as e:
                 print(f"[Log yuborishda xato]: {e}")
 
-        # So'ngra xabarni chatdan o'chiramiz
         try:
             await event.delete()
         except Exception as e:
