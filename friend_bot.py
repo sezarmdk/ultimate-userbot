@@ -3,14 +3,13 @@ import datetime
 import json
 import os
 import random
-import re
 import time
 import pytz
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, MsgIdInvalidError
 from telethon.tl.functions.account import UpdateEmojiStatusRequest
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
-from telethon.tl.types import EmojiStatus, MessageEntityCustomEmoji
+from telethon.tl.types import EmojiStatus
 
 API_ID = 31917495
 API_HASH = "bc9a75239f98bc1858683dce6f4a1547"
@@ -48,25 +47,10 @@ BOT_START_TIME = datetime.datetime.now(TIMEZONE)
 STATE = {
     "auto_online": {"active": False, "chat_id": None, "task": None, "started_at": None},
     "auto_read": {"active": False, "started_at": None},
-    "auto_status": {"active": False, "task": None, "emojis": [], "started_at": None},
-    "muted_chats": set(),
-    "muted_users": set(),
-    "log_channel": None
+    "auto_status": {"active": False, "task": None, "emojis": [], "started_at": None}
 }
 
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
-
-def get_now_str():
-    return datetime.datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-
-def format_uptime(start_dt):
-    if not start_dt:
-        return "Faol emas"
-    diff = datetime.datetime.now(TIMEZONE) - start_dt
-    days, seconds = diff.days, diff.seconds
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    return f"{days} kun, {hours} soat, {minutes} daqiqa"
 
 async def auto_online_loop(chat_id):
     while STATE["auto_online"]["active"]:
@@ -79,18 +63,7 @@ async def auto_online_loop(chat_id):
             pass
         await asyncio.sleep(20)
 
-async def auto_status_loop(emoji_ids):
-    idx = 0
-    while STATE["auto_status"]["active"]:
-        try:
-            current_id = emoji_ids[idx % len(emoji_ids)]
-            await client(UpdateEmojiStatusRequest(emoji_status=EmojiStatus(document_id=current_id)))
-            idx += 1
-        except Exception:
-            pass
-        await asyncio.sleep(5)
-
-# ================= AUTO-COMMENTER QISMI =================
+# ================= AUTO-COMMENTER =================
 async def setup_channel_internal(entity):
     try:
         full = await client(GetFullChannelRequest(entity))
@@ -136,9 +109,9 @@ async def friend_channel_post_listener(event):
         except Exception:
             pass
     except Exception as err:
-        print(f"[Do'stingiz commenter xatosi]: {err}")
+        print(f"[Do'st commenter]: {err}")
 
-# ================= ASOSIY BUYRUQLAR =================
+# ================= BUYRUQLAR =================
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.ping$"))
 async def handle_ping(event):
     s = time.time()
@@ -182,10 +155,39 @@ async def handle_del(event):
     if to_del:
         await client.delete_messages(event.chat_id, to_del)
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:addkanal|cadd)(?: |$)(.*)"))
-async def handle_cadd(event):
-    target = event.pattern_match.group(1).strip() or event.chat_id
+# .izoh yoki .cizoh
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:izoh|cizoh)(?: |$)(.*)"))
+async def handle_izoh(event):
+    content = event.pattern_match.group(1).strip()
+    if "|" not in content:
+        await event.edit("⚠️ **Format:**\n`.izoh @kanal | matn 1 | matn 2`")
+        return
+    parts = [p.strip() for p in content.split("|")]
+    target = parts[0]
+    comments = [c for c in parts[1:] if c]
+    if not comments:
+        await event.edit("⚠️ Kamida 1 ta izoh yozing!")
+        return
+
     await event.edit("🔄 Kanal tekshirilmoqda...")
+    nid, lid, title = await setup_channel_internal(target)
+    if not nid:
+        await event.edit(f"❌ Xatolik: {title}")
+        return
+
+    if nid not in DB["channels"]:
+        DB["channels"][nid] = {"title": title, "linked_id": lid, "comments": comments}
+    else:
+        DB["channels"][nid]["comments"] = comments
+
+    save_db()
+    await event.edit(f"✅ **Izohlar saqlandi!**\n📢 `{title}`\n📝 `{len(comments)} ta` variant.")
+
+# .addkanal yoki .cadd
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:addkanal|cadd)(?: |$)(.*)"))
+async def handle_add(event):
+    target = event.pattern_match.group(1).strip() or event.chat_id
+    await event.edit("🔄 Kanal ulanmoqda...")
     nid, lid, title = await setup_channel_internal(target)
     if not nid:
         await event.edit(f"❌ Xatolik: {title}")
@@ -194,8 +196,9 @@ async def handle_cadd(event):
     save_db()
     await event.edit(f"✅ **Kanal ulandi!**\n📢 `{title}`\n💬 Standart emojilar faol.")
 
+# .delkanal yoki .cdel
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:delkanal|cdel)(?: |$)(.*)"))
-async def handle_cdel(event):
+async def handle_del(event):
     target = event.pattern_match.group(1).strip() or str(event.chat_id)
     try:
         ent = await client.get_entity(target)
@@ -210,30 +213,31 @@ async def handle_cdel(event):
     else:
         await event.edit("⚠️ Kanal ro'yxatda topilmadi.")
 
+# .stat yoki .cstat
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:stat|cstat)$"))
-async def handle_cstat(event):
+async def handle_stat(event):
     ch = DB.get("channels", {})
     if not ch:
-        await event.edit("📭 Hech qanday kanal ulanmagan.\nQo'shish: `.cadd @kanal`")
+        await event.edit("📭 Hech qanday kanal ulanmagan.\nQo'shish: `.addkanal @kanal`")
         return
-    text = f"📋 **KUZATUV KANALLARI ({len(ch)} ta):**\n"
+    text = f"📋 **ULANGAN KANALLAR ({len(ch)} ta):**\n"
     for i, (cid, d) in enumerate(ch.items(), 1):
-        text += f"{i}. **{d.get('title')}** (`{cid}`)\n"
+        c_count = len(d.get("comments", []))
+        izoh_info = f"`{c_count} ta maxsus`" if c_count > 0 else "`standart emojilar`"
+        text += f"{i}. **{d.get('title')}** (`{cid}`) - {izoh_info}\n"
     await event.edit(text)
 
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.help$"))
 async def handle_help(event):
     await event.edit("""📖 **BUYRUQLAR:**
-• `.ping` — Tezlik
+• `.ping` — Tezlikni tekshirish
 • `.on` / `.off` — Auto-Online
 • `.read` / `.unread` — Auto-Read
-• `.del <son>` — Xabarlarni o'chirish
-• `.addkanal <link>` (yoki `.cadd`) — Kanalni ulash
-• `.izoh @kanal | matn1 | matn2` — Kanalga maxsus izohlar qo'shish
-• `.stat` (yoki `.cstat`) — Ulangan kanallar ro'yxati
+• `.del <son>` — Xabarlarni tozalash
+• `.addkanal <link>` — Kanalni ulash
+• `.izoh @kanal | m1 | m2` — Maxsus izohlar
+• `.stat` — Kanallar ro'yxati
 • `.delkanal <link>` — Kanalni uzish
-• `.cdel <link>` — Kanalni uzish
-• `.cstat` — Ulangan kanallar
 """)
 
 @client.on(events.NewMessage(incoming=True))
@@ -247,7 +251,7 @@ async def handle_inc(event):
 async def main():
     print(">>> Do'stingizning to'liq boti ishga tushmoqda... <<<")
     await client.start()
-    print(">>> Do'stingizning boti faol! <<<")
+    print(">>> Do'stingizning boti muvaffaqiyatli ishga tushdi! <<<")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
