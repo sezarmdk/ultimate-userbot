@@ -14,6 +14,15 @@ DB_FILE = "commenter_db.json"
 
 DEFAULT_EMOJIS = ["🤣", "🥀", "🗿", "✅", "🤦‍♂️", "❌", "😭"]
 
+def clean_id(cid):
+    """ID larni tozalab, bir xil formatga keltirish"""
+    s = str(cid)
+    if s.startswith("-100"):
+        return s[4:]
+    if s.startswith("-"):
+        return s[1:]
+    return s
+
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -41,22 +50,24 @@ client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 async def setup_channel_internal(entity):
     try:
         full = await client(GetFullChannelRequest(entity))
-        chan_id = full.full_chat.id
+        raw_cid = full.full_chat.id
         linked_id = full.full_chat.linked_chat_id
         
         if not linked_id:
-            return None, None, "Ushbu kanalda izohlar (Discussion) guruhi yo'q!"
+            return None, None, "Ushbu kanalda izohlar (Discussion) guruhi ulanmagan!"
 
+        # Muhokama guruhiga oldindan a'zo bo'lish
         try:
             await client(JoinChannelRequest(linked_id))
         except Exception:
             pass
 
         title = full.chats[0].title
-        return chan_id, linked_id, title
+        return clean_id(raw_cid), linked_id, title
     except Exception as e:
         return None, None, str(e)
 
+# ================= KANAL POSTLARINI TUTISH =================
 @client.on(events.NewMessage())
 async def fast_comment_handler(event):
     if not DB["active"] or not event.is_channel or event.is_group:
@@ -66,32 +77,36 @@ async def fast_comment_handler(event):
     if post_key in PROCESSED_POSTS:
         return
 
-    chan_key = str(event.chat_id)
-    if chan_key not in DB["channels"]:
+    current_cid = clean_id(event.chat_id)
+    
+    # Kanal bazada bormi?
+    if current_cid not in DB["channels"]:
         return
 
     PROCESSED_POSTS.add(post_key)
     start_time = time.time()
 
-    chan_data = DB["channels"][chan_key]
-    linked_chat_id = chan_data.get("linked_id")
-
-    if not linked_chat_id:
-        return
-
-    # Maxsus izohlar berilgan bo'lsa ulardan, bo'lmasa standart emojilardan birini tanlaydi
+    chan_data = DB["channels"][current_cid]
+    
+    # Izoh tanlash
     pool = chan_data.get("comments")
     if not pool:
         pool = DEFAULT_EMOJIS
-    
     comment_text = random.choice(pool)
 
+    # Izoh yuborish (Avval to'g'ridan-to'g'ri, agar topilmasa get_discussion_message orqali)
     try:
-        await client.send_message(
-            entity=linked_chat_id,
-            message=comment_text,
-            comment_to=event.id
-        )
+        try:
+            await client.send_message(
+                entity=event.chat_id,
+                message=comment_text,
+                comment_to=event.id
+            )
+        except Exception:
+            # Agar comment_to kanal entitysida ishlamasa, muhokama guruhiga reply qilamiz
+            discussion_msg = await client.get_discussion_message(event.chat_id, event.id)
+            await discussion_msg.reply(comment_text)
+
         elapsed_ms = int((time.time() - start_time) * 1000)
         DB["sent_count"] += 1
         save_db()
@@ -111,11 +126,12 @@ async def fast_comment_handler(event):
                 pass
 
     except FloodWaitError as fw:
+        print(f"[FloodWait]: {fw.seconds} soniya kutiladi...")
         await asyncio.sleep(fw.seconds)
     except Exception as err:
-        print(f"[Commenter xatosi]: {err}")
+        print(f"[Izoh yozishda xatolik]: {err}")
 
-# Buyruqlar
+# ================= BUYRUQLAR =================
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.ping$"))
 async def handle_ping(event):
     start = time.time()
@@ -152,13 +168,13 @@ async def handle_addkanal(event):
             await event.edit(f"❌ **Xatolik:** {res}")
             return
 
-        DB["channels"][str(chan_id)] = {
+        DB["channels"][chan_id] = {
             "title": res,
             "linked_id": linked_id,
             "comments": []
         }
         save_db()
-        await event.edit(f"✅ **Kanal muvaffaqiyatli ulandi!**\n📢 **Nomi:** `{res}`\n🆔 **ID:** `{chan_id}`\n💬 Standart emojilar rejimida.")
+        await event.edit(f"✅ **Kanal muvaffaqiyatli ulandi!**\n📢 **Nomi:** `{res}`\n🆔 **ID:** `{chan_id}`\n💬 Standart emojilar faollashdi.")
     except Exception as e:
         await event.edit(f"❌ **Kanal topilmadi:** `{e}`")
 
@@ -174,17 +190,13 @@ async def handle_delkanal(event):
         except Exception:
             target = str(target)
 
-    found_key = None
-    for k in DB["channels"]:
-        if k == target or k == f"-100{target}" or target.endswith(k.replace("-100", "")):
-            found_key = k
-            break
+    target_clean = clean_id(target)
 
-    if found_key:
-        name = DB["channels"][found_key].get("title", found_key)
-        del DB["channels"][found_key]
+    if target_clean in DB["channels"]:
+        name = DB["channels"][target_clean].get("title", target_clean)
+        del DB["channels"][target_clean]
         save_db()
-        await event.edit(f"🗑 **Kanal kuzatuvdan olib tashlandi:** `{name}`")
+        await event.edit(f"🗑 **Kanal olib tashlandi:** `{name}`")
     else:
         await event.edit("⚠️ **Ushbu kanal ro'yxatda topilmadi.**")
 
@@ -194,7 +206,7 @@ async def handle_log(event):
     if not target or target.lower() == "me":
         DB["log_chat"] = "me"
         save_db()
-        await event.edit("📋 **Log joyi:** `Saved Messages (O'zingizga)`")
+        await event.edit("📋 **Log joyi:** `Saved Messages`")
         return
 
     try:
@@ -202,15 +214,15 @@ async def handle_log(event):
         DB["log_chat"] = entity.id
         save_db()
         title = getattr(entity, "title", str(entity.id))
-        await event.edit(f"📋 **Log kanali o'rnatildi:** `{title}` (`{entity.id}`)")
+        await event.edit(f"📋 **Log kanali:** `{title}`")
     except Exception as e:
-        await event.edit(f"❌ **Log joyi topilmadi:** `{e}`")
+        await event.edit(f"❌ **Topilmadi:** `{e}`")
 
 @client.on(events.NewMessage(outgoing=True, pattern=r"^\.izoh(?: |$)(.*)"))
 async def handle_izoh(event):
     content = event.pattern_match.group(1).strip()
     if "|" not in content:
-        await event.edit("⚠️ **Format:**\n`.izoh @kanal | 1-matn | 2-matn | 3-matn`")
+        await event.edit("⚠️ **Format:**\n`.izoh @kanal | 1-matn | 2-matn`")
         return
 
     parts = [p.strip() for p in content.split("|")]
@@ -218,10 +230,10 @@ async def handle_izoh(event):
     comments = [c for c in parts[1:] if c]
 
     if not comments:
-        await event.edit("⚠️ Kamida 1 ta izoh matni yozing!")
+        await event.edit("⚠️ Kamida bitta izoh matni yozing!")
         return
 
-    await event.edit("🔄 **Kanal tekshirilmoqda...**")
+    await event.edit("🔄 **Kanal sozlanmoqda...**")
     try:
         entity = await client.get_entity(target)
         chan_id, linked_id, res = await setup_channel_internal(entity)
@@ -229,22 +241,20 @@ async def handle_izoh(event):
             await event.edit(f"❌ **Xatolik:** {res}")
             return
 
-        cid_str = str(chan_id)
-        if cid_str not in DB["channels"]:
-            DB["channels"][cid_str] = {
+        if chan_id not in DB["channels"]:
+            DB["channels"][chan_id] = {
                 "title": res,
                 "linked_id": linked_id,
                 "comments": comments
             }
         else:
-            DB["channels"][cid_str]["comments"] = comments
+            DB["channels"][chan_id]["comments"] = comments
 
         save_db()
         await event.edit(
-            f"✅ **Maxsus izohlar biriktirildi!**\n"
+            f"✅ **Maxsus izohlar saqlandi!**\n"
             f"📢 **Kanal:** `{res}`\n"
-            f"📝 **Variantlar:** `{len(comments)} ta`\n"
-            f"🎲 Har yangi postda ulardan biri random tanlab yoziladi."
+            f"📝 **Izohlar soni:** `{len(comments)} ta`"
         )
     except Exception as e:
         await event.edit(f"❌ **Xatolik:** `{e}`")
@@ -261,9 +271,8 @@ async def handle_info(event):
 ⚙️ **Holat:** {status}
 ⏳ **Uptime:** `{uptime_str}`
 🚀 **Jami yuborilgan izohlar:** `{DB['sent_count']} ta`
-📢 **Ulangan kanallar soni:** `{len(DB['channels'])} ta`
+📢 **Ulangan kanallar:** `{len(DB['channels'])} ta`
 📋 **Log joyi:** {log_target}
-⚡ **Kesh holati:** `RAM + JSON (Doimiy)`
 ━━━━━━━━━━━━━━━━━━━━
 """
     await event.edit(text)
@@ -272,17 +281,14 @@ async def handle_info(event):
 async def handle_help(event):
     help_text = """📖 **TEZKOR IZOH USERBOT BUYRUQLARI**
 ━━━━━━━━━━━━━━━━━━━━
-⚡ **Asosiy buyruqlar:**
-• `.ping` — Bot tezligi va javob berish vaqtini tekshirish.
-• `.info` — Botning to'liq holati va statistikasi.
-• `.stat` — Kuzatuvga olingan barcha kanallar ro'yxati.
-• `.help` — Ushbu qo'llanma.
-
-📢 **Kanal va Izohlar:**
-• `.addkanal <link/id>` — Yangi kanalni kuzatuvga qo'shish (standart emojilar bilan yozadi).
-• `.delkanal <link/id>` — Kanalni kuzatuvdan olib tashlash.
-• `.izoh @kanal | matn 1 | matn 2 | matn 3` — Shu kanal uchun maxsus izoh matnlarini biriktirish.
-• `.log <id/link/me>` — Izoh yuborilgandagi bildirishnomalar boradigan manzil.
+⚡ **Buyruqlar:**
+• `.ping` — Bot tezligini tekshirish.
+• `.stat` — Ulangan kanallar ro'yxati.
+• `.addkanal <link>` — Kanalni ulash.
+• `.delkanal <link>` — Kanalni uzish.
+• `.izoh @kanal | matn1 | matn2` — Kanalga maxsus matnlar biriktirish.
+• `.log <link/me>` — Hisobotlar boradigan joy.
+• `.info` — Tizim holati.
 ━━━━━━━━━━━━━━━━━━━━
 """
     await event.edit(help_text)
