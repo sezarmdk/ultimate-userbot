@@ -182,7 +182,7 @@ async def handle_del(event):
     if to_del:
         await client.delete_messages(event.chat_id, to_del)
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.cadd(?: |$)(.*)"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:addkanal|cadd)(?: |$)(.*)"))
 async def handle_cadd(event):
     target = event.pattern_match.group(1).strip() or event.chat_id
     await event.edit("🔄 Kanal tekshirilmoqda...")
@@ -194,7 +194,7 @@ async def handle_cadd(event):
     save_db()
     await event.edit(f"✅ **Kanal ulandi!**\n📢 `{title}`\n💬 Standart emojilar faol.")
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.cdel(?: |$)(.*)"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:delkanal|cdel)(?: |$)(.*)"))
 async def handle_cdel(event):
     target = event.pattern_match.group(1).strip() or str(event.chat_id)
     try:
@@ -210,7 +210,7 @@ async def handle_cdel(event):
     else:
         await event.edit("⚠️ Kanal ro'yxatda topilmadi.")
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.cstat$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:stat|cstat)$"))
 async def handle_cstat(event):
     ch = DB.get("channels", {})
     if not ch:
@@ -228,7 +228,10 @@ async def handle_help(event):
 • `.on` / `.off` — Auto-Online
 • `.read` / `.unread` — Auto-Read
 • `.del <son>` — Xabarlarni o'chirish
-• `.cadd <link>` — Kanalni avto-izohga ulash
+• `.addkanal <link>` (yoki `.cadd`) — Kanalni ulash
+• `.izoh @kanal | matn1 | matn2` — Kanalga maxsus izohlar qo'shish
+• `.stat` (yoki `.cstat`) — Ulangan kanallar ro'yxati
+• `.delkanal <link>` — Kanalni uzish
 • `.cdel <link>` — Kanalni uzish
 • `.cstat` — Ulangan kanallar
 """)
